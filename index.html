@@ -163,9 +163,7 @@
       <button class="key" data-value="4">4</button>
       <button class="key" data-value="5">5</button>
       <button class="key" data-value="6">6</button>
-      <button class="key op" data-value="-" title="Subtract">−</button>
-
-      <button class="key" data-value="1">1</button>
+      <button class="key op" data-value="-" title="Subtract">-</button> <button class="key" data-value="1">1</button>
       <button class="key" data-value="2">2</button>
       <button class="key" data-value="3">3</button>
       <button class="key op" data-value="+" title="Add">+</button>
@@ -198,11 +196,23 @@
       // Helpers
       function updateScreen(){
         exprEl.textContent = expression;
-        resultEl.textContent = (lastEval === null) ? (expression ? '' : '0') : String(lastEval);
-        if(!expression && lastEval === null) resultEl.textContent = '0';
+        // If an evaluation was just performed, don't show the expression, just the result
+        // If no expression and no result, show 0
+        if(!expression && lastEval === null) {
+          resultEl.textContent = '0';
+        } else if (lastEval !== null) {
+          resultEl.textContent = String(lastEval);
+        } else {
+          resultEl.textContent = '';
+        }
       }
 
       function append(value){
+        // FIXED: If user is starting a new calculation after getting a result, clear expression
+        if (lastEval !== null && !['+', '-', '×', '÷'].includes(value)) {
+            expression = '';
+        }
+        
         // Prevent two operators in a row (basic)
         const ops = ['+','-','×','÷','*','/'];
         const last = expression.slice(-1);
@@ -234,26 +244,59 @@
       }
 
       function toggleSign(){
-        // try to toggle sign of the last number chunk
-        // find last number start
-        let i = expression.length - 1;
-        while(i >= 0 && /[0-9.]|\%/.test(expression[i])) i--;
-        // now i points to operator or -1
-        const head = expression.slice(0,i+1);
-        const num = expression.slice(i+1);
-        if(!num) return;
-        // If head ends with '-' and before that an operator or (, remove that negative sign
-        if(head.endsWith('-') && (head.length===1 || /[+\-×÷*/(]$/.test(head.slice(0,-1)))){
-          expression = head.slice(0,-1) + num;
-        } else {
-          expression = head + '(-' + num + ')';
+        // Try to toggle sign of the last number chunk.
+        // It looks for patterns like:
+        // 1. "123" -> "(-123)"
+        // 2. "2+(-123)" -> "2+123"
+        // 3. "(-123)" -> "123"
+        
+        // Match a number (with optional decimal/percent) possibly wrapped in parentheses for negation.
+        // This is simplified but works for basic cases from this calculator's append logic.
+        const numPattern = /([0-9.]+\%?)$/;
+        const negPattern = /\(\-([0-9.]+\%?)\)$/;
+
+        let match;
+
+        // Case 2 & 3: Match a negative number at the end, possibly wrapped.
+        const lastPart = expression.match(/(\([+\-×÷*/]?\-?\)|\([0-9.]+\%?\)|[0-9.]+\%?)$/);
+
+        if (lastPart) {
+            let lastSegment = lastPart[0];
+            
+            // Check for the pattern "(-Number)" at the end (Case 3)
+            match = lastSegment.match(negPattern);
+            if (match) {
+                // If it's "(-Number)", replace it with "Number"
+                expression = expression.slice(0, expression.length - lastSegment.length) + match[1];
+            } else {
+                // Check for a positive number at the end (Case 1)
+                match = lastSegment.match(numPattern);
+                if (match) {
+                    // If it's "Number", replace it with "(-Number)"
+                    // Check if it's already a negative number like "-123" not wrapped in parens (e.g., at the start of expression or after operator)
+                    const prevChar = expression.slice(0, expression.length - lastSegment.length).slice(-1);
+                    if (prevChar === '-' && (expression.length - lastSegment.length === 1 || /[+\-×÷*/(]$/.test(expression.slice(0, expression.length - lastSegment.length).slice(0, -1)))) {
+                        // If it's just a simple negative, e.g., "-123" at start or "2*-123" -> remove the negative
+                        expression = expression.slice(0, expression.length - lastSegment.length - 1) + match[1];
+                    } else {
+                        // Otherwise, wrap in parentheses and add negative sign: "Number" -> "(-Number)"
+                        expression = expression.slice(0, expression.length - lastSegment.length) + '(-' + match[1] + ')';
+                    }
+                }
+            }
         }
+        
+        // Fallback for an empty expression if a more complex parsing failed
+        if (!expression) {
+            expression = '(-0)'; // Special case for starting
+        }
+
         updateScreen();
       }
 
       function percent(){
         // Append % sign. Evaluation will convert % -> /100
-        // Avoid appending % to operators.
+        // Avoid appending % to operators, parentheses, or an empty expression.
         const last = expression.slice(-1);
         if(!expression || /[+\-×÷*/(]$/.test(last)) return;
         expression += '%';
@@ -263,18 +306,17 @@
       function safeEvaluate(raw){
         // map × ÷ to * /
         let s = raw.replace(/×/g,'*').replace(/÷/g,'/');
-        // convert percent: replace occurrences of number% with (number/100)
-        // e.g. "50%" -> "(50/100)" ; "20+10%" -> "20+(10/100)"
-        s = s.replace(/([0-9.]+)%/g, '($1/100)');
+        
+        // FIXED: convert percent: replace occurrences of number% with (number/100)
+        // Includes parentheses to handle toggled signs like "(-50)%"
+        s = s.replace(/([0-9.()]+)%/g, '($1/100)');
 
         // allow only digits, operators, parentheses, decimal and whitespace now
         if(!/^[0-9+\-*/().\s]+$/.test(s)){
           throw new Error('Invalid characters in expression');
         }
 
-        // final safety: avoid sequences like "++" etc (let JS handle some)
         // Evaluate using Function to isolate scope
-        // Note: this calculator is intended for local use. For complex parser, replace with a proper expression parser.
         /* eslint-disable no-new-func */
         const fn = new Function('return ' + s);
         return fn();
@@ -288,7 +330,7 @@
           // Round result for display: keep up to 12 significant digits (avoid floating noise)
           const rounded = parseFloat(Number(val).toPrecision(12));
           lastEval = rounded;
-          expression = String(rounded);
+          expression = String(rounded); // The result becomes the new expression
         }catch(err){
           lastEval = 'Error';
         }
@@ -328,8 +370,8 @@
         if(key === 'Escape'){ clearAll(); e.preventDefault(); return; }
         if(key === '.'){ append('.'); e.preventDefault(); return; }
         if(key === '+'|| key === '-' || key === '*' || key === '/'){
-          // map * / to × ÷ in expression for consistent display, but easier to append standard operators
-          const map = {'*':'×','/':'÷','+':'+','-':'−'};
+          // FIXED: map * / to × ÷ for display, and use standard + -
+          const map = {'*':'×','/':'÷','+':'+','-':'-'}; // Mapped '-' to '-'
           append(map[key] || key); e.preventDefault(); return;
         }
         if(key === '%'){ percent(); e.preventDefault(); return; }
